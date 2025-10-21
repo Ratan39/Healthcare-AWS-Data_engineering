@@ -1,17 +1,3 @@
-# Streamlit Reports Block – Rule Index + Evidence Guidance (app_reports.py)
-# -----------------------------------------------------------------------
-# This prototype implements the requirements you listed:
-# 1) Rule-Based Index (penalties 0–3) → Disease subscore (0–100) → Wellness
-# 2) Evidence-mapped guidance by lab-pattern clusters (no patient-behavior data)
-# 3) Reports block with chips (Normal/Watch/High), key signals, confidence, next steps
-# 4) Shows two (or more) disease cards if multiple are flagged
-# 5) Overall improvement line graph (monthly Wellness) with healthy band + milestones
-#
-# To run:
-#   pip install streamlit pandas numpy plotly
-#   streamlit run app_reports.py
-# -----------------------------------------------------------------------
-
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
@@ -296,8 +282,8 @@ pdf = df[df["patient_id"] == patient] if "patient_id" in df.columns else df.copy
 pdf = pdf.sort_values("date")
 latest = pdf.iloc[-1]
 
-st.title("Reports Analysis")
-st.caption("Educational insights, not a diagnosis. Talk with your clinician about your results.")
+st.title("Report Analysis")
+st.caption("Educational insights, not a diagnosis. Talk with your Doctor about your results.")
 
 # -------------------------------------
 # Subscores per disease (rule index)
@@ -315,11 +301,12 @@ wellness, conf, used = wellness_score(SUBSCORES)
 # Header: wellness + date + based-on count
 c1, c2, c3 = st.columns([1.2, 1, 1])
 with c1:
-    st.markdown("### Wellness gauge")
+    st.markdown("### Wellness gauge (rule-based)")
     if np.isnan(wellness):
         st.info("Not enough data to compute Wellness.")
     else:
         bg = go.Figure(go.Indicator(
+            mode="gauge+number",
             value=float(wellness),
             title={"text": f"Based on {len(used)}/5 areas"},
             gauge={"axis": {"range": [0, 100]},
