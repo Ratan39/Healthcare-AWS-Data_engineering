@@ -296,7 +296,7 @@ pdf = df[df["patient_id"] == patient] if "patient_id" in df.columns else df.copy
 pdf = pdf.sort_values("date")
 latest = pdf.iloc[-1]
 
-st.title("🧭 Patient Reports")
+st.title("Reports Analysis")
 st.caption("Educational insights, not a diagnosis. Talk with your clinician about your results.")
 
 # -------------------------------------
@@ -315,12 +315,11 @@ wellness, conf, used = wellness_score(SUBSCORES)
 # Header: wellness + date + based-on count
 c1, c2, c3 = st.columns([1.2, 1, 1])
 with c1:
-    st.markdown("### Wellness gauge (rule-based)")
+    st.markdown("### Wellness gauge")
     if np.isnan(wellness):
         st.info("Not enough data to compute Wellness.")
     else:
         bg = go.Figure(go.Indicator(
-            mode="gauge+number",
             value=float(wellness),
             title={"text": f"Based on {len(used)}/5 areas"},
             gauge={"axis": {"range": [0, 100]},
