@@ -1,3 +1,17 @@
+# Streamlit Reports Block – Rule Index + Evidence Guidance (app_reports.py)
+# -----------------------------------------------------------------------
+# This prototype implements the requirements you listed:
+# 1) Rule-Based Index (penalties 0–3) → Disease subscore (0–100) → Wellness
+# 2) Evidence-mapped guidance by lab-pattern clusters (no patient-behavior data)
+# 3) Reports block with chips (Normal/Watch/High), key signals, confidence, next steps
+# 4) Shows two (or more) disease cards if multiple are flagged
+# 5) Overall improvement line graph (monthly Wellness) with healthy band + milestones
+#
+# To run:
+#   pip install streamlit pandas numpy plotly
+#   streamlit run app_reports.py
+# -----------------------------------------------------------------------
+
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
@@ -8,7 +22,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-st.set_page_config(page_title="Report Analysis", page_icon="", layout="wide")
+st.set_page_config(page_title="Patient Reports", page_icon="🧭", layout="wide")
 
 # ------------------------------------------------------
 # Reference ranges & penalty bins (transparent + editable)
@@ -277,13 +291,15 @@ patient = st.sidebar.selectbox("Patient", patients)
 
 # Global toggle for details
 deep_insights = st.sidebar.toggle("Deeper insights", value=False)
+# Layout choice: new Rings vs classic Cards
+layout_choice = st.sidebar.radio("View", ["Rings (new)", "Cards (classic)"], index=0)
 
 pdf = df[df["patient_id"] == patient] if "patient_id" in df.columns else df.copy()
 pdf = pdf.sort_values("date")
 latest = pdf.iloc[-1]
 
-st.title("Report Analysis")
-st.caption("Educational insights, not a diagnosis. Talk with your Doctor about your results.")
+st.title("🧭 Patient Reports")
+st.caption("Educational insights, not a diagnosis. Talk with your clinician about your results.")
 
 # -------------------------------------
 # Subscores per disease (rule index)
@@ -431,49 +447,121 @@ for disease in WEIGHTS.keys():
 show_all = st.checkbox("Show all 5 reports", value=False)
 filtered = [c for c in cards if c["chip"] in ("Watch","High")] if not show_all else cards
 
-if not filtered:
-    st.success("All looks normal today based on available results.")
+# ---- Overview (Rings vs Cards) ----
+if layout_choice == "Rings (new)":
+    st.subheader("Your Health Rings")
+    import plotly.graph_objects as go
 
-# Render in 2-column grid
-cols = st.columns(2)
-for i, c in enumerate(filtered):
-    with cols[i % 2]:
-        st.markdown(f"### {c['disease']}  " + chip(c["chip"]), unsafe_allow_html=True)
-        st.caption(f"Last tested: **{c['last']}** · Confidence: **{c['confidence']}**")
-        if c["signals"]:
-            st.write("**Insights:** ", ", ".join(c["signals"]))
-        # Trend arrow (simple slope on primary analyte)
-        primary = list(WEIGHTS[c["disease"]].keys())[0]
-        if primary in pdf.columns and pdf[primary].notna().sum() >= 2:
-            v = pdf[primary].dropna()
-            slope = (v.iloc[-1] - v.iloc[0]) / max(1, len(v)-1)
-            arrow = "→ stable"
-            if slope < 0: arrow = "▲ improving" if c["disease"] in ("Cardiovascular","Prediabetes","Liver","CKD") else "▼ worsening"
-            if slope > 0: arrow = "▼ worsening" if c["disease"] in ("Cardiovascular","Prediabetes","Liver","CKD") else "▲ improving"
-            st.caption(f"Trend: {arrow}")
+    def ring_chart(score: float, label: str, chip_label: str):
+        score = max(0, min(100, float(score if pd.notnull(score) else 0)))
+        remain = 100 - score
+        color = CHIPS.get(chip_label, CHIPS["n/a"])['color']
+        fig = go.Figure(data=[
+            go.Pie(values=[score, remain], hole=0.72, sort=False, direction='clockwise',
+                   marker=dict(colors=[color, '#EAEAEA']), textinfo='none', hoverinfo='skip')
+        ])
+        fig.update_layout(showlegend=False, margin=dict(l=0,r=0,t=0,b=0), height=180,
+                          annotations=[dict(text=f"{int(round(score))}", x=0.5, y=0.52, showarrow=False,
+                                            font=dict(size=28, color='#222')),
+                                       dict(text=label, x=0.5, y=0.14, showarrow=False,
+                                            font=dict(size=13, color='#555'))])
+        st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("**Next steps**")
-        steps = ["Recheck in ~3 months"]
-        if c["disease"] == "Cardiovascular":
-            steps.append("Discuss statin eligibility")
-            steps.append("Quick nutrition tips: Mediterranean-style swaps")
-        elif c["disease"] == "Prediabetes":
-            steps.append("Quick nutrition tips: reduce refined sugar, add fiber")
-        elif c["disease"] == "CKD":
-            steps.append("Quick tips: hydration and reduce salt (unless advised otherwise)")
-        elif c["disease"] == "Anemia":
-            steps.append("Quick tips: iron-rich foods; pair with vitamin C")
-        elif c["disease"] == "Liver":
-            steps.append("Quick tips: limit alcohol; review meds with clinician")
-        for s in steps:
-            st.write("- ", s)
+    # Build ring items (always show all 5)
+    ring_items = []
+    for disease in WEIGHTS.keys():
+        subs, _ = disease_subscore(disease, latest)
+        # Find chip for color context
+        card = next((c for c in cards if c['disease'] == disease), None)
+        chip_label = card['chip'] if card else 'n/a'
+        score = subs if pd.notnull(subs) else (100 if chip_label == 'Normal' else 65 if chip_label == 'Watch' else 35)
+        ring_items.append({"disease": disease, "score": score, "chip": chip_label})
 
-        st.markdown("---")
+    cols5 = st.columns(5)
+    for i, item in enumerate(ring_items):
+        with cols5[i % 5]:
+            ring_chart(item["score"], item["disease"], item["chip"])
+    st.caption("Rings show your current wellness for each area (0–100). Colors reflect risk level.")
+
+    # --- Key markers (Option 4 element): top drivers per Watch/High disease ---
+    if filtered:
+        st.markdown("### Key markers driving your risk")
+        km_cols = st.columns(2)
+        idx = 0
+        for c in filtered:
+            pens = PENALTY_DETAILS.get(c["disease"], {})
+            if not pens:
+                continue
+            top = sorted(pens.items(), key=lambda x: x[1], reverse=True)[:3]
+            rows = []
+            for a, p in top:
+                val = latest.get(a)
+                hr = {
+                    "LDL": "< 100 mg/dL", "HDL": "≥ 40 mg/dL", "Triglycerides": "< 150 mg/dL", "TotalChol": "< 200 mg/dL",
+                    "A1c": "< 5.7%", "GlucoseBlood": "70–99 mg/dL",
+                    "eGFR": "≥ 60", "Creatinine": "0.6–1.3 mg/dL", "BUN": "7–20 mg/dL",
+                    "ALT": "< 40 U/L", "AST": "< 40 U/L", "Bilirubin": "0.3–1.2 mg/dL", "Albumin": "3.5–5.0 g/dL",
+                    "Hemoglobin": "12.0–16.5 g/dL", "Hematocrit": "36–49%",
+                }.get(a, "—")
+                status = ["Normal ✅", "Borderline ⚠️", "High ❗", "Very high ❗"][p] if p is not None else "n/a"
+                if isinstance(val, (int, float)) and not pd.isna(val):
+                    vtxt = f"{val:.2f}" if abs(val) < 100 else f"{val:.0f}"
+                else:
+                    vtxt = str(val) if val is not None else "—"
+                rows.append([a, vtxt, hr, status])
+            if rows:
+                df_km = pd.DataFrame(rows, columns=["Marker", "Your Value", "Healthy Range", "Status"])
+                with km_cols[idx % 2]:
+                    st.markdown(f"**{c['disease']}**  " + chip(c["chip"]), unsafe_allow_html=True)
+                    st.table(df_km)
+                idx += 1
+    else:
+        st.success("All looks normal today based on available results.")
+
+else:
+    # Classic cards view
+    if not filtered:
+        st.success("All looks normal today based on available results.")
+
+    cols = st.columns(2)
+    for i, c in enumerate(filtered):
+        with cols[i % 2]:
+            st.markdown(f"### {c['disease']}  " + chip(c["chip"]), unsafe_allow_html=True)
+            st.caption(f"Last tested: **{c['last']}** · Confidence: **{c['confidence']}**")
+            if c["signals"]:
+                st.write("**Insights:** ", ", ".join(c["signals"]))
+            # Trend arrow
+            primary = list(WEIGHTS[c["disease"]].keys())[0]
+            if primary in pdf.columns and pdf[primary].notna().sum() >= 2:
+                v = pdf[primary].dropna()
+                slope = (v.iloc[-1] - v.iloc[0]) / max(1, len(v)-1)
+                arrow = "→ stable"
+                if slope < 0: arrow = "▲ improving" if c["disease"] in ("Cardiovascular","Prediabetes","Liver","CKD") else "▼ worsening"
+                if slope > 0: arrow = "▼ worsening" if c["disease"] in ("Cardiovascular","Prediabetes","Liver","CKD") else "▲ improving"
+                st.caption(f"Trend: {arrow}")
+
+            st.markdown("**Next steps**")
+            steps = ["Recheck in ~3 months"]
+            if c["disease"] == "Cardiovascular":
+                steps.append("Discuss statin eligibility")
+                steps.append("Quick nutrition tips: Mediterranean-style swaps")
+            elif c["disease"] == "Prediabetes":
+                steps.append("Quick nutrition tips: reduce refined sugar, add fiber")
+            elif c["disease"] == "CKD":
+                steps.append("Quick tips: hydration and reduce salt (unless advised otherwise)")
+            elif c["disease"] == "Anemia":
+                steps.append("Quick tips: iron-rich foods; pair with vitamin C")
+            elif c["disease"] == "Liver":
+                steps.append("Quick tips: limit alcohol; review meds with clinician")
+            for s in steps:
+                st.write("- ", s)
+            st.markdown("---")
 
 # -------------------------------------
 # Details sections: Factors Table + Cluster-Based Wellness Guidance
 # (Shown only when the disease is Watch/High)
 # -------------------------------------
+# Note: Added Prediabetes Forecast Line (6–12 month outlook) below factors table.
 
 DISEASE_GUIDANCE = {
     "Cardiovascular": {
@@ -568,6 +656,46 @@ for c in filtered:
         if table_data:
             df_table = pd.DataFrame(table_data, columns=["Factor", "Your Value", "Healthy Range", "Status"])
             st.table(df_table)
+
+        # ---- Prediabetes Forecast Line (6–12 month outlook) ----
+        # Use A1c if available; fallback to fasting glucose.
+        import plotly.graph_objects as go
+        series_label, y_hist = None, None
+        if "A1c" in pdf.columns and pdf["A1c"].notna().sum() >= 3:
+            series_label = "A1c (%)"; y_hist = pdf[["date","A1c"]].dropna()
+        elif "GlucoseBlood" in pdf.columns and pdf["GlucoseBlood"].notna().sum() >= 3:
+            series_label = "Fasting Glucose (mg/dL)"; y_hist = pdf[["date","GlucoseBlood"]].dropna()
+
+        if y_hist is not None and len(y_hist) >= 3:
+            # Convert dates to ordinal for simple linear regression
+            x = y_hist["date"].map(pd.Timestamp.toordinal).values
+            y = y_hist.iloc[:,1].values
+            # Fit simple linear model
+            coeffs = np.polyfit(x, y, 1)
+            m, b = coeffs[0], coeffs[1]
+            # Build future timeline: next 12 months at monthly cadence
+            last_date = pd.to_datetime(y_hist["date"].max())
+            future_dates = pd.date_range(last_date + pd.offsets.MonthBegin(1), periods=12, freq="MS")
+            x_future = future_dates.map(pd.Timestamp.toordinal).values
+            y_future = m * x_future + b
+            # Simple widening CI (heuristic for UI)
+            sigma = max(1e-6, np.std(y - (m*x + b))) if len(y) > 2 else 0.0
+            baseline = np.maximum(1.0, np.nanmean(np.abs(y)))
+            ci = sigma + (np.arange(1, len(future_dates)+1) / len(future_dates)) * (0.15 * baseline)
+            upper = y_future + ci
+            lower = y_future - ci
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=y_hist["date"], y=y_hist.iloc[:,1], mode="lines+markers", name="Historical"))
+            fig.add_trace(go.Scatter(x=future_dates, y=y_future, mode="lines", name="Forecast", line=dict(dash="dash")))
+            fig.add_trace(go.Scatter(x=np.concatenate([future_dates, future_dates[::-1]]),
+                                     y=np.concatenate([upper, lower[::-1]]),
+                                     fill="toself", mode="lines", line=dict(width=0),
+                                     name="Confidence range", opacity=0.2))
+            fig.update_layout(margin=dict(l=10,r=10,t=30,b=10), height=300,
+                              title="6–12 Month Outlook (Prediabetes)",
+                              xaxis_title="Date", yaxis_title=series_label)
+            st.plotly_chart(fig, use_container_width=True)
 
     elif c["disease"] == "Cardiovascular":
         st.markdown("**What’s affecting your heart risk**")
